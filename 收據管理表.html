@@ -1,0 +1,656 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>慈濟收據管理系統 - 板橋股 正式版</title>
+    <!-- 載入必要套件 -->
+    <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- 載入 Klee One 字體 -->
+    <link href="https://fonts.googleapis.com/css2?family=Klee+One:wght@400;600&display=swap" rel="stylesheet">
+    <style>
+        @media print {
+            .no-print { display: none !important; }
+            .print-area { 
+                position: absolute; 
+                left: 0; 
+                top: 0; 
+                width: 100%; 
+                margin: 0; 
+                padding: 0; 
+                border: none !important; 
+                box-shadow: none !important; 
+                background: white !important;
+            }
+            /* 列印時強制使用 Klee One */
+            .print-area, .print-area * { font-family: 'Klee One', 'PingFang TC', serif !important; }
+            @page { 
+                size: A4 portrait; 
+                margin-top: 0.5cm;
+                margin-left: 0.5cm;
+                margin-right: 0.5cm;
+                margin-bottom: 0.8cm; 
+            }
+        }
+        body { font-family: 'PingFang TC', 'Microsoft JhengHei', sans-serif; }
+        .excel-table { border-collapse: collapse; width: 100%; border: 2.2px solid #000; }
+        .excel-table th, .excel-table td { border: 1px solid #000; padding: 2px 4px; }
+        .excel-table th { background-color: #f8fafc; font-weight: bold; }
+        
+        .checkbox-container { display: inline-flex; align-items: center; gap: 4px; margin-left: 10px; }
+        .checkbox-box { width: 16px; height: 16px; border: 1.2px solid #000; display: inline-block; position: relative; }
+        .checkbox-box.checked::after { content: '✔'; position: absolute; top: -5px; left: 1px; font-size: 14px; }
+        
+        .warm-sidebar {
+            background: linear-gradient(135deg, #fdf6e3 0%, #faecd5 100%);
+            background-image: radial-gradient(#e6d5b8 0.6px, transparent 0.6px);
+            background-size: 15px 15px;
+            height: 100vh;
+            display: flex;
+            flex-direction: column;
+            justify-content: space-between;
+        }
+        .warm-button-active { background-color: #d4a373 !important; color: white !important; }
+        .warm-button-hover:hover { background-color: #e9d8a6; }
+        
+        .modal-overlay { background: rgba(0,0,0,0.4); position: fixed; top: 0; left: 0; right: 0; bottom: 0; display: flex; align-items: center; justify-content: center; z-index: 1000; }
+        .notification-toast { position: fixed; bottom: 20px; right: 20px; background: #333; color: white; padding: 12px 24px; border-radius: 8px; z-index: 2000; box-shadow: 0 4px 12px rgba(0,0,0,0.15); }
+        
+        @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+        .animate-fadeIn { animation: fadeIn 0.4s ease-out; }
+        
+        .klee-font { font-family: 'Klee One', serif; }
+    </style>
+</head>
+<body class="bg-[#fefae0]">
+    <div id="root">
+        <div class="flex h-screen items-center justify-center text-slate-500 font-bold klee-font">系統啟動中...</div>
+    </div>
+
+    <script type="text/babel" data-presets="react" data-type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.1.0/firebase-app.js";
+        import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.1.0/firebase-auth.js";
+        import { getFirestore, collection, addDoc, onSnapshot, query, deleteDoc, doc, updateDoc } from "https://www.gstatic.com/firebasejs/11.1.0/firebase-firestore.js";
+
+     // Firebase 初始化與全局變數
+        const firebaseConfig = {
+            apiKey: "AIzaSyD-8rOHLP7f-MBplApevYvSO8A6kHuuyCk",
+            authDomain: "receipt-system-a42a9.firebaseapp.com",
+            projectId: "receipt-system-a42a9",
+            storageBucket: "receipt-system-a42a9.firebasestorage.app",
+            messagingSenderId: "965759038915",
+            appId: "1:965759038915:web:c398add58034c65698f976"
+        };
+        
+        const appId = 'receipt-manager-2026';
+        let db, auth;
+
+        // 立即執行初始化
+        if (firebaseConfig.apiKey) {
+            const app = initializeApp(firebaseConfig);
+            auth = getAuth(app);
+            db = getFirestore(app);
+        }
+
+        const { useState, useEffect, useMemo } = React;
+
+        // 1. 處理身份驗證與資料載入
+        useEffect(() => {
+            const init = async () => {
+                try {
+                    if (firebaseConfig.apiKey && auth && db) {
+                        // 執行匿名登入
+                        await signInAnonymously(auth);
+                        
+                        // 監聽雲端資料
+                        const colRef = collection(db, 'artifacts', appId, 'public', 'data', 'receipt_records');
+                        const unsubscribe = onSnapshot(colRef, (snapshot) => {
+                            const data = snapshot.docs.map(d => ({ id: d.id, ...d.data() }));
+                            const sortedData = data.sort((a, b) => new Date(a.date) - new Date(b.date));
+                            setRecords(sortedData);
+                            localStorage.setItem('bt_receipt_records_official', JSON.stringify(sortedData));
+                            setLoading(false); // 關閉啟動中畫面
+                        }, (err) => {
+                            console.error("讀取失敗:", err);
+                            setLoading(false);
+                        });
+                        
+                        setUser(auth.currentUser);
+                        return () => unsubscribe();
+                    } else {
+                        // 本地模式
+                        const localData = localStorage.getItem('bt_receipt_records_official');
+                        if (localData) setRecords(JSON.parse(localData));
+                        setUser({ uid: 'local-user', isLocal: true });
+                        setLoading(false);
+                    }
+                } catch (e) {
+                    console.error("系統啟動錯誤:", e);
+                    setLoading(false);
+                }
+            };
+            init();
+        }, []);
+  
+        const { useState, useEffect, useMemo } = React;
+
+        const Icon = ({ name }) => {
+            const icons = {
+                dashboard: <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2V6zM14 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2V6zM4 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2v-2zM14 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2v-2z" /></svg>,
+                plus: <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 4v16m8-8H4" /></svg>,
+                list: <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 6h16M4 10h16M4 14h16M4 18h16" /></svg>,
+                print: <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M17 17h2a2 2 0 002-2v-4a2 2 0 00-2-2H5a2 2 0 00-2 2v4a2 2 0 002 2h2m2 4h6a2 2 0 002-2v-4a2 2 0 00-2-2H9a2 2 0 00-2 2v4a2 2 0 002 2zm8-12V5a2 2 0 00-2-2H9a2 2 0 00-2 2v4h10z" /></svg>
+            };
+            return icons[name] || null;
+        };
+
+        const PlantDecoration = () => (
+            <svg viewBox="0 0 200 120" className="w-48 h-auto opacity-60" xmlns="http://www.w3.org/2000/svg">
+                <g fill="none" stroke="#606c38" strokeWidth="1.5" strokeLinecap="round">
+                    <path d="M10,110 C40,90 60,100 90,70 C110,50 130,60 160,30" />
+                    <path d="M10,110 C30,110 50,90 70,100" />
+                    <path d="M160,30 C170,20 185,25 190,15" />
+                </g>
+                <path fill="#adc178" d="M90,70 C100,55 115,50 125,60 C110,75 100,75 90,70" />
+                <path fill="#a98467" d="M50,95 C60,85 75,85 80,95 C70,105 55,105 50,95" />
+                <path fill="#adc178" d="M130,55 C145,40 160,45 165,55 C150,65 140,65 130,55" />
+                <circle fill="#dda15e" cx="160" cy="30" r="4" />
+                <circle fill="#bc6c25" cx="168" cy="25" r="3" />
+                <circle fill="#fefae0" cx="155" cy="22" r="2" />
+            </svg>
+        );
+
+        function ReceiptApp() {
+            const [view, setView] = useState('dashboard');
+            const [records, setRecords] = useState([]);
+            const [user, setUser] = useState(null);
+            const [loading, setLoading] = useState(true);
+            const [editRecord, setEditRecord] = useState(null);
+            const [toast, setToast] = useState(null);
+
+            const showToast = (msg) => {
+                setToast(msg);
+                setTimeout(() => setToast(null), 4000);
+            };
+
+            const getInitialFormData = () => ({
+                date: new Date().toISOString().split('T')[0],
+                type: 'monthly',
+                boxCount: 1,
+                startBox: '',
+                startSerial: '',
+            });
+
+            const [formData, setFormData] = useState(getInitialFormData());
+
+            const [reportConfig, setReportConfig] = useState({
+                year: new Date().getFullYear() - 1911,
+                month: new Date().getMonth() + 1,
+                type: 'monthly',
+                stockCount: 1
+            });
+
+            // 1. 處理身份驗證與資料載入 (同步優化版)
+            useEffect(() => {
+                const init = async () => {
+                    if (firebaseConfig.apiKey) {
+                        try {
+                            // 執行登入
+                            if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+                                await signInWithCustomToken(auth, __initial_auth_token);
+                            } else {
+                                await signInAnonymously(auth);
+                            }
+
+                            // 監聽身份狀態
+                            const unsubscribeAuth = onAuthStateChanged(auth, (u) => {
+                                if (u) {
+                                    setUser(u);
+                                    // 身份確認後，開啟雲端資料監聽
+                                    const colRef = collection(db, 'artifacts', appId, 'public', 'data', 'receipt_records');
+                                    const unsubscribeData = onSnapshot(colRef, 
+                                        (snapshot) => {
+                                            const data = snapshot.docs.map(d => ({ id: d.id, ...d.data() }));
+                                            const sortedData = data.sort((a, b) => new Date(a.date) - new Date(b.date));
+                                            
+                                            // 【關鍵修正】：強制用雲端最新的資料覆蓋掉本地舊資料
+                                            setRecords(sortedData);
+                                            localStorage.setItem('bt_receipt_records_official', JSON.stringify(sortedData));
+                                            
+                                            setLoading(false);
+                                        },
+                                        (error) => {
+                                            console.error("Firestore sync error:", error);
+                                            setLoading(false);
+                                        }
+                                    );
+                                } else {
+                                    setLoading(false);
+                                }
+                            });
+                            return () => unsubscribeAuth();
+                        } catch (e) {
+                            console.error("Auth error:", e);
+                            setLoading(false);
+                        }
+                    } else {
+                        // 本地模式：僅在沒有 API Key 時才完全依賴 LocalStorage
+                        const localData = localStorage.getItem('bt_receipt_records_official');
+                        if (localData) setRecords(JSON.parse(localData));
+                        setUser({ uid: 'local-user', isLocal: true });
+                        setLoading(false);
+                    }
+                };
+                init();
+            }, []);
+
+            // 2. 處理資料獲取 (MANDATORY RULE 1 & 3)
+            useEffect(() => {
+                if (!user || user.isLocal) return;
+
+                const colRef = collection(db, 'artifacts', appId, 'public', 'data', 'receipt_records');
+                const unsubscribe = onSnapshot(colRef, 
+                    (snapshot) => {
+                        const data = snapshot.docs.map(d => ({ id: d.id, ...d.data() }));
+                        setRecords(data.sort((a, b) => new Date(a.date) - new Date(b.date)));
+                    },
+                    (error) => {
+                        console.error("Firestore sync error:", error);
+                        showToast("連線發生錯誤，請稍後再試");
+                    }
+                );
+                return () => unsubscribe();
+            }, [user]);
+
+            // 本地儲存同步
+            useEffect(() => {
+                if (user?.isLocal) {
+                    localStorage.setItem('bt_receipt_records_official', JSON.stringify(records));
+                }
+            }, [records, user]);
+
+            // 修正統計邏輯
+            const statsByYear = useMemo(() => {
+                const stats = {};
+                records.forEach(r => {
+                    const dateObj = new Date(r.date);
+                    if (isNaN(dateObj.getTime())) return;
+                    const yearKey = dateObj.getFullYear() - 1911;
+                    if (!stats[yearKey]) stats[yearKey] = { monthly: 0, annual: 0 };
+                    if (r.type === 'monthly') stats[yearKey].monthly += (parseInt(r.boxCount) || 0);
+                    else stats[yearKey].annual += (parseInt(r.boxCount) || 0);
+                });
+                return Object.entries(stats).sort((a, b) => b[0] - a[0]);
+            }, [records]);
+
+            const calculatePreview = (data) => {
+                if (!data) return { startBox: '', endBox: '', endSerial: '', total: 0 };
+                const perBox = data.type === 'monthly' ? 6000 : 4000;
+                const count = parseInt(data.boxCount) || 0;
+                const total = count * perBox;
+                const startB = parseInt(data.startBox);
+                const endB = !isNaN(startB) ? startB + count - 1 : '';
+                const startS = parseInt(data.startSerial);
+                const endS = !isNaN(startS) ? startS + total - 1 : '';
+                return {
+                    startBox: !isNaN(startB) ? String(startB).padStart(3, '0') : '',
+                    endBox: !isNaN(endB) ? String(endB).padStart(3, '0') : '',
+                    endSerial: !isNaN(endS) ? String(endS).padStart(7, '0') : '',
+                    total
+                };
+            };
+
+            const previewCalc = useMemo(() => calculatePreview(formData), [formData]);
+
+            const stockRows = useMemo(() => {
+                let results = [];
+                const filtered = records.filter(r => r.type === reportConfig.type);
+                const sorted = [...filtered].sort((a,b) => new Date(a.date) - new Date(b.date));
+
+                sorted.forEach(record => {
+                    const perBox = record.type === 'monthly' ? 6000 : 4000;
+                    const boxes = parseInt(record.boxCount) || 0;
+                    const startB = parseInt(record.startBox);
+                    const startS = parseInt(record.startSerial);
+                    const yearSuffix = new Date(record.date).getFullYear().toString().slice(-2);
+                    const prefix = record.type === 'monthly' ? 'M' : 'Y';
+
+                    for (let i = 0; i < boxes; i++) {
+                        const currentBox = startB + i;
+                        const currentStartS = startS + (i * perBox);
+                        const currentEndS = currentStartS + perBox - 1;
+
+                        results.push({
+                            boxNo: String(currentBox).padStart(3, '0'),
+                            serialRange: `${prefix}${yearSuffix} ${String(currentStartS).padStart(7, '0')}~${String(currentEndS).padStart(7, '0')}`
+                        });
+                    }
+                });
+                const limit = Math.min(15, parseInt(reportConfig.stockCount) || 0);
+                return results.slice(-limit);
+            }, [records, reportConfig.type, reportConfig.stockCount]);
+
+            const save = async () => {
+                if (!formData.startBox || !formData.startSerial) return showToast("請完整填寫起始資料");
+                const res = calculatePreview(formData);
+                const newEntry = { 
+                    ...formData, startBox: res.startBox, endBox: res.endBox, endSerial: res.endSerial,
+                    createdAt: new Date().toISOString(), id: Date.now().toString(), uid: user?.uid
+                };
+                
+                if (user?.isLocal) {
+                    setRecords(prev => [...prev, newEntry].sort((a,b) => new Date(a.date) - new Date(b.date)));
+                    showToast("✅ 資料已儲存至本地");
+                    setFormData(getInitialFormData()); 
+                    setView('ledger');
+                } else {
+                    try {
+                        const colRef = collection(db, 'artifacts', appId, 'public', 'data', 'receipt_records');
+                        await addDoc(colRef, newEntry);
+                        showToast("✅ 雲端同步儲存成功");
+                        setFormData(getInitialFormData()); 
+                        setView('ledger');
+                    } catch (e) { 
+                        console.error(e);
+                        showToast("❌ 儲存失敗，請檢查網路權限"); 
+                    }
+                }
+            };
+
+            const updateRecord = async () => {
+                if (!editRecord) return;
+                const res = calculatePreview(editRecord);
+                const updated = { 
+                    ...editRecord, 
+                    startBox: res.startBox, 
+                    endBox: res.endBox, 
+                    endSerial: res.endSerial 
+                };
+                
+                if (user?.isLocal) {
+                    setRecords(prev => prev.map(r => r.id === editRecord.id ? updated : r).sort((a,b) => new Date(a.date) - new Date(b.date)));
+                    setEditRecord(null);
+                    showToast("✅ 本地資料已更新");
+                } else {
+                    try {
+                        // 【關鍵修正】：補全完整的資料庫路徑
+                        const docRef = doc(db, 'artifacts', appId, 'public', 'data', 'receipt_records', editRecord.id);
+                        await updateDoc(docRef, updated);
+                        
+                        showToast("✅ 雲端更新成功");
+                        setEditRecord(null);
+                    } catch (e) { 
+                        console.error("更新失敗詳細原因:", e);
+                        showToast("❌ 更新失敗，請檢查權限或網路"); 
+                    }
+                }
+            };
+
+            const del = async (id) => {
+                if (!window.confirm("確定刪除此筆進貨紀錄？")) return;
+                
+                if (firebaseConfig.apiKey && db) {
+                    try {
+                        // 【最強路徑修正】：確保直接對準雲端文件 ID
+                        const docRef = doc(db, 'artifacts', appId, 'public', 'data', 'receipt_records', id);
+                        await deleteDoc(docRef);
+                        
+                        // 同步清除本地快取，防止重整後死而復生
+                        const updatedRecords = records.filter(r => r.id !== id);
+                        setRecords(updatedRecords);
+                        localStorage.setItem('bt_receipt_records_official', JSON.stringify(updatedRecords));
+                        
+                        showToast("✅ 已從雲端永久刪除");
+                    } catch (e) { 
+                        console.error("刪除失敗:", e);
+                        showToast("❌ 刪除失敗，請檢查權限"); 
+                    }
+                } else {
+                    const updatedRecords = records.filter(r => r.id !== id);
+                    setRecords(updatedRecords);
+                    localStorage.setItem('bt_receipt_records_official', JSON.stringify(updatedRecords));
+                    showToast("已從本地刪除");
+                }
+            };
+                
+                // 同步更新本地狀態（這行一定要在，畫片才會即時更新）
+                setRecords(prev => prev.filter(r => r.id !== id));
+                
+                // 如果是本地模式，也要更新 LocalStorage
+                if (!firebaseConfig.apiKey) {
+                    showToast("已從瀏覽器刪除");
+                }
+            };
+            if (loading) return <div className="h-screen flex items-center justify-center bg-[#fefae0] klee-font text-[#6d4c41] font-bold text-xl">系統載入中...</div>;
+
+            return (
+                <div className="min-h-screen flex flex-col md:flex-row font-sans text-[#5d4037]">
+                    <nav className="w-full md:w-64 warm-sidebar p-6 no-print shrink-0 shadow-lg border-r border-[#e6d5b8] h-screen sticky top-0">
+                        <div>
+                            <div className="mb-10 text-center md:text-left">
+                                <h1 className="text-2xl font-bold text-[#6d4c41]">收據管理</h1>
+                                <p className="text-sm text-[#8d6e63] font-medium mt-1">板橋股 正式版</p>
+                                <div className="mt-4 h-0.5 w-full bg-[#d4a373] opacity-20"></div>
+                            </div>
+                            <div className="space-y-3">
+                                {['dashboard', 'entry', 'ledger', 'report'].map(v => (
+                                    <button key={v} onClick={()=>setView(v)} className={`w-full flex items-center gap-3 px-5 py-3 rounded-xl transition font-bold ${view===v?'warm-button-active shadow-md':'text-[#6d4c41] warm-button-hover'}`}>
+                                        <Icon name={v==='dashboard'?'dashboard':v==='entry'?'plus':v==='ledger'?'list':'print'}/>
+                                        {v==='dashboard'?'總表':v==='entry'?'進貨登錄':v==='ledger'?'進貨明細':v==='report'?'管理表列印':''}
+                                    </button>
+                                ))}
+                            </div>
+                        </div>
+                        <div className="mt-auto pt-6 flex justify-center pb-6">
+                            <PlantDecoration />
+                        </div>
+                    </nav>
+
+                    <main className="flex-1 p-6 md:p-10 overflow-y-auto bg-white/40">
+                        {/* 總表 */}
+                        {view === 'dashboard' && (
+                            <div className="space-y-8 animate-fadeIn">
+                                <h2 className="text-2xl font-bold text-[#bc6c25]">收據彙總統計表</h2>
+                                {statsByYear.length > 0 ? statsByYear.map(([y, d]) => (
+                                    <div key={y} className="bg-white p-8 rounded-[2.5rem] border border-[#faecd5] shadow-sm text-center md:text-left">
+                                        <h3 className="text-xl font-bold text-[#bc6c25] mb-6">民國 {y} 年度</h3>
+                                        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                                            <div className="bg-blue-50/50 p-6 rounded-2xl border border-blue-100">
+                                                <div className="text-xs font-bold text-blue-600 mb-1">月開格式 (6000張/箱)</div>
+                                                <div className="text-4xl font-black">{d.monthly} 箱</div>
+                                            </div>
+                                            <div className="bg-emerald-50/50 p-6 rounded-2xl border border-emerald-100">
+                                                <div className="text-xs font-bold text-emerald-600 mb-1">年開格式 (4000張/箱)</div>
+                                                <div className="text-4xl font-black">{d.annual} 箱</div>
+                                            </div>
+                                        </div>
+                                    </div>
+                                )) : (
+                                    <div className="p-20 text-center bg-white rounded-3xl text-slate-300 italic shadow-inner">尚未錄入數據</div>
+                                )}
+                            </div>
+                        )}
+
+                        {/* 進貨登錄 */}
+                        {view === 'entry' && (
+                            <div className="max-w-xl mx-auto bg-white p-8 md:p-10 rounded-[2.5rem] shadow-xl border border-[#faedcd] animate-fadeIn text-[#5d4037]">
+                                <h2 className="text-2xl font-bold mb-10 text-center">進貨資料登錄</h2>
+                                <div className="space-y-6">
+                                    <div className="grid grid-cols-2 gap-6">
+                                        <div><label className="text-xs font-bold text-[#a98467] mb-2 block">進貨日期</label>
+                                        <input type="date" value={formData.date} onChange={e=>setFormData({...formData, date:e.target.value})} className="w-full border-2 border-[#faedcd] p-3 rounded-2xl outline-none focus:border-[#d4a373] transition"/></div>
+                                        <div><label className="text-xs font-bold text-[#a98467] mb-2 block">收據類型</label>
+                                            <select value={formData.type} onChange={e=>setFormData({...formData, type:e.target.value})} className="w-full border-2 border-[#faedcd] p-3 rounded-2xl outline-none focus:border-[#d4a373] transition">
+                                                <option value="monthly">月開 (6000張)</option><option value="annual">年開 (4000張)</option>
+                                            </select>
+                                        </div>
+                                    </div>
+                                    <div className="grid grid-cols-3 gap-4">
+                                        <div><label className="text-xs font-bold text-[#a98467] mb-2 block">箱數</label><input type="number" value={formData.boxCount} onChange={e=>setFormData({...formData, boxCount:e.target.value})} className="w-full border-2 border-[#faedcd] p-3 rounded-2xl outline-none focus:border-[#d4a373]"/></div>
+                                        <div><label className="text-xs font-bold text-[#a98467] mb-2 block">起箱號</label><input type="text" value={formData.startBox} onChange={e=>setFormData({...formData, startBox:e.target.value})} className="w-full border-2 border-[#faedcd] p-3 rounded-2xl outline-none focus:border-[#d4a373]" placeholder="001"/></div>
+                                        <div><label className="text-xs font-bold text-[#a98467] mb-2 block">訖箱號</label><div className="p-3 bg-slate-50 border-2 border-slate-100 rounded-2xl text-slate-400 font-bold text-center">{previewCalc.endBox}</div></div>
+                                    </div>
+                                    <div className="grid grid-cols-2 gap-6">
+                                        <div><label className="text-xs font-bold text-[#a98467] mb-2 block">起始流水號</label><input type="text" value={formData.startSerial} onChange={e=>setFormData({...formData, startSerial:e.target.value})} className="w-full border-2 border-[#faedcd] p-3 rounded-2xl outline-none focus:border-[#d4a373]" placeholder="0360001"/></div>
+                                        <div><label className="text-xs font-bold text-[#a98467] mb-2 block">截止流水號</label><div className="p-3 bg-slate-50 border-2 border-slate-100 rounded-2xl text-slate-400 font-bold text-center">{previewCalc.endSerial}</div></div>
+                                    </div>
+                                    <button onClick={save} className="w-full bg-[#bc6c25] text-white py-4 rounded-2xl font-bold shadow-lg transition active:scale-95 text-lg">確認儲存</button>
+                                </div>
+                            </div>
+                        )}
+
+                        {/* 進貨明細 */}
+                        {view === 'ledger' && (
+                            <div className="bg-white rounded-[2.5rem] border border-[#faedcd] shadow-xl overflow-hidden animate-fadeIn">
+                                <div className="p-8 bg-[#faedcd] flex justify-between items-center text-[#5d4037]">
+                                    <h2 className="font-bold text-xl tracking-tight">進貨明細清單</h2>
+                                    <span className="bg-white/50 px-4 py-1.5 rounded-full text-xs font-black opacity-60 italic">
+    {user?.isLocal ? "資料已自動儲存於此瀏覽器" : "✅ 雲端資料同步中"}
+</span>
+                                </div>
+                                <div className="overflow-x-auto p-2">
+                                    <table className="w-full text-sm text-left">
+                                        <thead>
+                                            <tr className="text-[#a98467] font-black uppercase text-lg tracking-widest border-b border-[#faedcd]">
+                                                <th className="p-6">日期</th><th className="p-6 text-center">類型</th><th className="p-6 text-center">箱數</th><th className="p-6 text-center">箱號區間</th><th className="p-6 text-center">操作</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody className="divide-y divide-[#faf3dd]">
+                                            {records.map(r => {
+                                                const res = calculatePreview(r);
+                                                return (
+                                                    <tr key={r.id} className="hover:bg-[#fdfcf0] transition text-base font-medium text-[#5d4037]">
+                                                        <td className="p-6 font-bold">{r.date}</td>
+                                                        <td className="p-6 text-center">
+                                                            <span className={`px-4 py-2 rounded-full text-[13px] font-black uppercase shadow-sm border ${r.type==='monthly' ? 'bg-cyan-500 border-cyan-600 text-white':'bg-lime-500 border-lime-600 text-white'}`}>
+                                                                {r.type==='monthly'?'月開':'年開'}
+                                                            </span>
+                                                        </td>
+                                                        <td className="p-6 text-center font-black text-xl text-[#bc6c25]">{r.boxCount}</td>
+                                                        <td className="p-6 text-center font-medium text-slate-500">{res.startBox} ~ {res.endBox}</td>
+                                                        <td className="p-6 text-center flex justify-center gap-6">
+    <button onClick={()=>del(r.id)} className="text-red-400 hover:font-black transition underline text-lg">刪除</button>
+</td>
+                                                    </tr>
+                                                );
+                                            })}
+                                        </tbody>
+                                    </table>
+                                </div>
+                            </div>
+                        )}
+
+                        {/* 管理表列印 */}
+                        {view === 'report' && (
+                            <div className="space-y-10 animate-fadeIn text-[#5d4037]">
+                                <div className="bg-white p-8 rounded-3xl border border-[#faedcd] shadow-md no-print text-[#5d4037]">
+                                    <h3 className="font-bold mb-8 flex items-center gap-2 text-[#bc6c25]"><Icon name="print"/> 列印參數設定</h3>
+                                    <div className="flex flex-wrap gap-8 items-end">
+                                        <div className="space-y-1">
+                                            <label className="text-[11px] font-black block uppercase tracking-wider">民國年</label>
+                                            <input type="number" value={reportConfig.year} onChange={e=>setReportConfig({...reportConfig, year:e.target.value})} className="border-2 border-[#faedcd] p-3 rounded-2xl w-24 outline-none focus:border-[#d4a373]"/>
+                                        </div>
+                                        <div className="space-y-1">
+                                            <label className="text-[11px] font-black block uppercase tracking-wider">月份</label>
+                                            <select value={reportConfig.month} onChange={e=>setReportConfig({...reportConfig, month:e.target.value})} className="border-2 border-[#faedcd] p-3 rounded-2xl outline-none focus:border-[#d4a373]">
+                                                {[...Array(12)].map((_,i)=><option key={i+1} value={i+1}>{i+1}月</option>)}
+                                            </select>
+                                        </div>
+                                        <div className="space-y-1">
+                                            <label className="text-[11px] font-black block uppercase tracking-wider">格式</label>
+                                            <select value={reportConfig.type} onChange={e=>setReportConfig({...reportConfig, type:e.target.value})} className="border-2 border-[#faedcd] p-3 rounded-2xl focus:border-[#d4a373] outline-none">
+                                                <option value="monthly">月開格式</option><option value="annual">年開格式</option>
+                                            </select>
+                                        </div>
+                                        <div className="space-y-1">
+                                            <label className="text-[11px] font-black block uppercase tracking-wider text-[#bc6c25]">庫存箱數</label>
+                                            <input type="number" value={reportConfig.stockCount} onChange={e=>setReportConfig({...reportConfig, stockCount:e.target.value})} className="border-[#bc6c25] border-2 p-3 rounded-2xl w-32 font-black"/>
+                                        </div>
+                                        <button onClick={()=>window.print()} className="bg-[#5d4037] text-white px-10 py-3.5 rounded-2xl font-bold hover:bg-black transition-all shadow-lg active:scale-95">預覽並列印</button>
+                                    </div>
+                                </div>
+
+                                <div className="print-area bg-white pt-[0.2cm] pb-[0.2cm] px-[1.2cm] shadow-2xl border mx-auto w-full max-w-[21cm] min-h-[29.7cm] text-black klee-font">
+                                    <div className="text-center mb-3">
+                                        <h1 className="text-2xl font-bold mb-0.5">財團法人中華民國佛教慈濟慈善事業基金會</h1>
+                                        <h2 className="text-xl font-bold tracking-[0.4em]">收據管理表</h2>
+                                    </div>
+                                    <div className="flex justify-between items-center font-bold mb-1.5 px-4 text-[18px]">
+                                        <div className="flex gap-8 ml-24"><span>{reportConfig.year} 年</span><span>{reportConfig.month} 月</span></div>
+                                        <div className="flex items-center">
+                                            <span>收據類別：</span>
+                                            <div className="checkbox-container"><div className={`checkbox-box ${reportConfig.type === 'monthly' ? 'checked' : ''}`}></div><span>月開</span></div>
+                                            <div className="checkbox-container"><div className={`checkbox-box ${reportConfig.type === 'annual' ? 'checked' : ''}`}></div><span>年開</span></div>
+                                        </div>
+                                    </div>
+                                    <div className="text-center font-bold mb-1.5 text-[18px]">
+                                        上月庫存數量：<span className="ml-2 text-[24px] font-mono text-blue-800">{reportConfig.stockCount}</span>
+                                    </div>
+                                    <table className="excel-table text-center text-[14px] font-bold">
+                                        <thead>
+                                            <tr><th rowSpan="2" className="w-20">日期</th><th colSpan="2">領用</th><th colSpan="2">使用機台</th><th rowSpan="2" className="w-24">領取人員</th><th rowSpan="2" className="w-24">管理人員</th><th rowSpan="2" className="w-24">檢查人員</th></tr>
+                                            <tr><th className="w-16">箱號</th><th className="w-56">流水編號</th><th className="w-16">機房</th><th className="w-16">現場</th></tr>
+                                        </thead>
+                                        <tbody>
+                                            {stockRows.map((row, i) => (
+                                                <tr key={i} className="h-[1.28cm]"><td></td><td className="text-[16px] text-blue-900">{row.boxNo}</td><td className="font-mono text-[16px] text-blue-900 whitespace-nowrap">{row.serialRange}</td><td></td><td></td><td></td><td></td><td></td></tr>
+                                            ))}
+                                            {[...Array(Math.max(0, 15 - stockRows.length))].map((_,i)=>(<tr key={`empty-${i}`} className="h-[1.28cm]"><td>&nbsp;</td><td></td><td></td><td></td><td></td><td></td><td></td><td></td></tr>))}
+                                        </tbody>
+                                    </table>
+                                    <div className="mt-2 text-[12px] font-bold leading-relaxed">
+                                        <p>註：1. 領用人向管理人提出用量申請後，填寫箱號及流水編號，於表單上勾選「使用機台」名稱並於領取人欄位簽名。</p>
+                                        <p className="ml-7">2. 檢查時機：(1)管理人員每次領取 (2)檢查人員進行不定期檢查/抽查。</p>
+                                        <div className="text-right mt-0.5">20250901版</div>
+                                    </div>
+                                </div>
+                            </div>
+                        )}
+                    </main>
+
+                    {editRecord && (
+                        <div className="modal-overlay no-print">
+                            <div className="bg-white p-8 md:p-10 rounded-[2.5rem] shadow-2xl w-full max-w-lg border-4 border-[#faedcd] animate-fadeIn text-[#5d4037]">
+                                <h3 className="text-2xl font-black mb-8 text-center tracking-wider">修改進貨明細</h3>
+                                <div className="space-y-6">
+                                    <div className="grid grid-cols-2 gap-4">
+                                        <div><label className="text-xs font-bold block mb-1">日期</label>
+                                        <input type="date" value={editRecord.date} onChange={e=>setEditRecord({...editRecord, date:e.target.value})} className="w-full border-2 border-[#faedcd] p-3 rounded-2xl outline-none focus:border-[#d4a373] transition"/></div>
+                                        <div><label className="text-xs font-bold block mb-1">格式</label>
+                                            <select value={editRecord.type} onChange={e=>setEditRecord({...editRecord, type:e.target.value})} className="w-full border-2 border-[#faedcd] p-3 rounded-2xl outline-none focus:border-[#d4a373] transition">
+                                                <option value="monthly">月開</option><option value="annual">年開</option>
+                                            </select>
+                                        </div>
+                                    </div>
+                                    <div className="grid grid-cols-3 gap-4">
+                                        <div><label className="text-xs font-bold block mb-1">箱數</label>
+                                        <input type="number" value={editRecord.boxCount} onChange={e=>setEditRecord({...editRecord, boxCount:e.target.value})} className="w-full border-2 border-[#faedcd] p-3 rounded-2xl outline-none focus:border-[#d4a373] transition"/></div>
+                                        <div><label className="text-xs font-bold block mb-1">起箱號</label>
+                                        <input type="text" value={editRecord.startBox} onChange={e=>setEditRecord({...editRecord, startBox:e.target.value})} className="w-full border-2 border-[#faedcd] p-3 rounded-2xl outline-none focus:border-[#d4a373] transition"/></div>
+                                        <div><label className="text-xs font-bold block mb-1">訖箱號</label>
+                                        <div className="p-3 bg-slate-50 border-2 border-slate-100 rounded-2xl text-slate-400 font-bold text-center">{calculatePreview(editRecord).endBox}</div></div>
+                                    </div>
+                                    <div><label className="text-xs font-bold block mb-1">起流水號</label>
+                                    <input type="text" value={editRecord.startSerial} onChange={e=>setEditRecord({...editRecord, startSerial:e.target.value})} className="w-full border-2 border-[#faedcd] p-3 rounded-2xl outline-none focus:border-[#d4a373] transition"/></div>
+                                    <div className="flex gap-4 pt-6">
+                                        <button onClick={updateRecord} className="flex-1 bg-[#bc6c25] text-white py-4 rounded-2xl font-bold shadow-lg transition active:scale-95">更新紀錄</button>
+                                        <button onClick={()=>setEditRecord(null)} className="flex-1 bg-slate-100 text-slate-500 py-4 rounded-2xl font-bold hover:bg-slate-200 transition">取消</button>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    )}
+
+                    {toast && <div className="notification-toast flex items-center gap-3 animate-bounce">{toast}</div>}
+                </div>
+            );
+        }
+
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<ReceiptApp />);
+    </script>
+</body>
+</html>
